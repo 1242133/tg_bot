@@ -205,3 +205,24 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+# Virtual envs
+.venv/
+venv/
+env/
+.venv1/
+*.egg-info/
+
+# IDE
+.idea/
+
+# Local env
+.env
