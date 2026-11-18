@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import secrets
 import datetime
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -119,11 +120,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    if data_key == "next_question":
-        # Двинем индекс вопроса ВПЕРЁД
-        st = user_data.get(user_id)
-        if st is not None:
-            st["current"] = st.get("current", 0) + 1
+    if data_key == "next_question" or data_key.startswith("next|"):
+        state = user_data.get(user_id)
+        if state is None:
+            await query.edit_message_text("Пожалуйста, начни сначала: /start")
+            return
+        if data_key != f"next|{state.get('turn')}" or not state.get("answered"):
+            return
+        state["answered"] = False
+        state["current"] += 1
         await send_question(query, context)
         return
 
@@ -184,12 +189,14 @@ async def send_question(query, context):
     questions = data["questions"]
 
     if current_index < len(questions):
+        turn = secrets.token_hex(8)
+        data.update(turn=turn, answered=False)
         q = questions[current_index]
         options_text = "\n".join([f"{i + 1}. {opt}" for i, opt in enumerate(q["options"])])
         text = f"Вопрос {current_index + 1}: {q['question']}\n\n{options_text}"
 
         answer_buttons = [
-            InlineKeyboardButton(str(i + 1), callback_data=f"answer|{i}")
+            InlineKeyboardButton(str(i + 1), callback_data=f"answer|{turn}|{i}")
             for i in range(len(q["options"]))
         ]
         keyboard = [answer_buttons]
@@ -229,25 +236,32 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text("Пожалуйста, начни сначала: /start")
         return
 
-    _, index = query.data.split("|")
-    index = int(index)
-
     data = user_data[user_id]
+    parts = query.data.split("|")
+    if len(parts) != 3 or parts[1] != data.get("turn") or data.get("answered"):
+        return
+    if data["current"] >= len(data["questions"]):
+        return
     current_question = data["questions"][data["current"]]
+    if parts[2] not in map(str, range(len(current_question["options"]))):
+        return
+    index = int(parts[2])
+    data["answered"] = True
+    next_button = InlineKeyboardButton("➡️ Продолжить", callback_data=f"next|{parts[1]}")
     correct = current_question["correct"]
 
     if index in correct:
         data["score"] += 1
         await query.edit_message_text(
             text="✅ Верно!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data="next_question")]])
+            reply_markup=InlineKeyboardMarkup([[next_button]])
         )
     else:
         correct_texts = [current_question["options"][i] for i in correct]
         correct_str = " / ".join(correct_texts)
         await query.edit_message_text(
             text=f"❌ Неверно. Правильный ответ: {correct_str}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data="next_question")]])
+            reply_markup=InlineKeyboardMarkup([[next_button]])
         )
 
 def main():
