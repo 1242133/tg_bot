@@ -1,6 +1,7 @@
 import os
 import json
-import random
+import secrets
+from html import escape
 import datetime
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -39,12 +40,10 @@ user_data = {}
 
 def get_module_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🧠 Модуль 1: Базовая теория", callback_data="module_1")],
-        [InlineKeyboardButton("🧩 Модуль 2: Backend", callback_data="module_2")],
-        [InlineKeyboardButton("🎨 Модуль 3: Frontend", callback_data="module_3")],
-        [InlineKeyboardButton("🎲 Случайные 15 вопросов", callback_data="module_mixed")],
-        [InlineKeyboardButton("👤 Профиль", callback_data="profile_menu")],
+        [InlineKeyboardButton(topic, callback_data=f"module_1|{i}")]
+        for i, topic in enumerate(quiz_data["module_1"])
     ]
+    keyboard.append([InlineKeyboardButton("👤 Профиль", callback_data="profile_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,15 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     greeting = (
         f"Привет, {name}! 👋\n"
-        "Я — бот-викторина по ручному тестированию (QA)!\n\n"
-        "📚 Как пользоваться ботом?\n"
-        "1️⃣ Выбери модуль (базовая теория, backend, frontend или случайные вопросы)\n"
-        "2️⃣ Затем выбери тему (подблок)\n"
-        "3️⃣ Читай вопрос, жми на вариант ответа (или цифру)\n"
-        "4️⃣ После ответа появляется кнопка \"Продолжить\"\n"
-        "5️⃣ В конце темы увидишь результат и сможешь пройти тему ещё раз или выбрать другую\n\n"
-        "Команда /profile — посмотреть свою историю викторин.\n"
-        "Готов учиться и тренироваться? Выбирай модуль ниже 👇"
+        "📚 Базовая теория QA. Выбери тему, ответь на вопросы и посмотри результат в /profile."
     )
     if update.message:
         await update.message.reply_text(greeting, reply_markup=get_module_keyboard())
@@ -77,106 +68,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def greet_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
+async def profile(update, context):
+    user_id_str = str(update.effective_user.id)
+    if user_id_str not in users or not users[user_id_str].get("history"):
+        text = "Профиль пуст. Пройди хотя бы одну тему!"
+    else:
+        history = users[user_id_str]["history"][-10:]
+        text = f"👤 <b>Профиль {escape(users[user_id_str]['name'])}</b>\n\n"
+        text += f"📚 Пройдено тем: <b>{len(users[user_id_str]['history'])}</b>\n\n"
+        for i, item in enumerate(history):
+            mod_title = MODULE_TITLES.get(item.get('module', ''), item.get('module', ''))
+            text += (f"{i+1}) <b>{mod_title}</b> / <i>{item.get('subblock','')}</i>\n"
+                     f"  <b>Результат:</b> {item['score']}/{item['total']} ({item['date'][:19]})\n")
+    keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data="restart")]]
+    reply = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
+    await reply(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data_key = query.data
 
-    # --- Новый блок: обработка профиля
     if data_key == "profile_menu":
-        user_id_str = str(user_id)
-        if user_id_str not in users or not users[user_id_str].get("history"):
-            text = "Профиль пуст. Пройди хотя бы одну тему!"
-        else:
-            history = users[user_id_str]["history"][-10:]
-            text = f"👤 <b>Профиль {users[user_id_str]['name']}</b>\n\n"
-            text += f"📚 Пройдено тем: <b>{len(users[user_id_str]['history'])}</b>\n\n"
-            for i, item in enumerate(history):
-                mod_title = MODULE_TITLES.get(item.get('module', ''), item.get('module', ''))
-                text += (f"{i+1}) <b>{mod_title}</b> / <i>{item.get('subblock','')}</i>\n"
-                         f"  <b>Результат:</b> {item['score']}/{item['total']} ({item['date'][:19]})\n")
-        keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data="restart")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        await profile(update, context)
         return
 
-    # Случайные 15 вопросов — старт без выбора темы
-    if data_key == "module_mixed":
-        questions = quiz_data["module_mixed"]["questions"]
-        questions = random.sample(questions, min(15, len(questions)))
-        user_data[user_id] = {
-            "questions": questions,
-            "current": 0,
-            "score": 0,
-            "module": data_key,
-            "subblock": "Случайные вопросы",
-            "last_quiz": (data_key, "Случайные вопросы")
-        }
-        await send_question(query, context)
+    state = user_data.get(user_id)
+    if data_key.startswith("next|"):
+        if state and data_key == f"next|{state['turn']}" and state.pop("answered", False):
+            state["current"] += 1
+            await send_question(query, context)
         return
 
-    if data_key == "restart":
+    topics = list(quiz_data["module_1"])
+    if data_key == "repeat_quiz" and state:
+        topic = state["subblock"]
+    elif data_key in {f"module_1|{i}" for i in range(len(topics))}:
+        topic = topics[int(data_key.split("|")[1])]
+    else:
         await start(update, context)
         return
 
-    if data_key == "next_question":
-        # Двинем индекс вопроса ВПЕРЁД
-        st = user_data.get(user_id)
-        if st is not None:
-            st["current"] = st.get("current", 0) + 1
-        await send_question(query, context)
-        return
-
-    if data_key == "repeat_quiz":
-        last = user_data.get(user_id, {}).get("last_quiz")
-        if last:
-            module_key, subblock = last
-            if module_key == "module_mixed":
-                questions = quiz_data["module_mixed"]["questions"]
-                questions = random.sample(questions, min(15, len(questions)))
-            else:
-                questions = quiz_data[module_key][subblock]["questions"]
-            user_data[user_id].update({
-                "questions": questions,
-                "current": 0,
-                "score": 0,
-                "module": module_key,
-                "subblock": subblock
-            })
-            await send_question(query, context)
-        else:
-            await start(update, context)
-        return
-
-    # Тема (подблок) по индексу
-    if "|" in data_key:
-        module_key, subblock_idx = data_key.split("|", 1)
-        subblocks = list(quiz_data[module_key].keys())
-        subblock = subblocks[int(subblock_idx)]
-        questions = quiz_data[module_key][subblock]["questions"]
-        user_data[user_id] = {
-            "questions": questions,
-            "current": 0,
-            "score": 0,
-            "module": module_key,
-            "subblock": subblock,
-            "last_quiz": (module_key, subblock)
-        }
-        await send_question(query, context)
-        return
-
-    # Выбор модуля (без случайных) — показать подблоки
-    if data_key in quiz_data:
-        subblocks = list(quiz_data[data_key].keys())
-        keyboard = [
-            [InlineKeyboardButton(subblock, callback_data=f"{data_key}|{i}")]
-            for i, subblock in enumerate(subblocks)
-        ]
-        keyboard.append([InlineKeyboardButton("🔙 Вернуться к модулям", callback_data="restart")])
-        await query.edit_message_text("Выбери тему:", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    await query.edit_message_text("❌ Неверный выбор. Попробуйте снова.", reply_markup=get_module_keyboard())
+    user_data[user_id] = {
+        "questions": quiz_data["module_1"][topic]["questions"],
+        "current": 0, "score": 0, "module": "module_1", "subblock": topic,
+    }
+    await send_question(query, context)
 
 async def send_question(query, context):
     data = user_data[query.from_user.id]
@@ -184,17 +123,18 @@ async def send_question(query, context):
     questions = data["questions"]
 
     if current_index < len(questions):
+        data["turn"] = secrets.token_hex(6)
         q = questions[current_index]
         options_text = "\n".join([f"{i + 1}. {opt}" for i, opt in enumerate(q["options"])])
         text = f"Вопрос {current_index + 1}: {q['question']}\n\n{options_text}"
 
         answer_buttons = [
-            InlineKeyboardButton(str(i + 1), callback_data=f"answer|{i}")
+            InlineKeyboardButton(str(i + 1), callback_data=f"answer|{data['turn']}|{i}")
             for i in range(len(q["options"]))
         ]
         keyboard = [answer_buttons]
         keyboard.append([
-            InlineKeyboardButton("🏠 Модули", callback_data="restart")
+            InlineKeyboardButton("🏠 Темы", callback_data="restart")
         ])
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -203,7 +143,7 @@ async def send_question(query, context):
         total = len(questions)
         keyboard = [
             [InlineKeyboardButton("🔄 Пройти ещё раз", callback_data="repeat_quiz")],
-            [InlineKeyboardButton("🏠 К выбору модуля", callback_data="restart")]
+            [InlineKeyboardButton("🏠 К выбору темы", callback_data="restart")]
         ]
         await query.edit_message_text(
             text=f"🏁 {name}, тема завершена!\nРезультат: {score}/{total}",
@@ -229,30 +169,37 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text("Пожалуйста, начни сначала: /start")
         return
 
-    _, index = query.data.split("|")
-    index = int(index)
-
     data = user_data[user_id]
+    parts = query.data.split("|")
+    if len(parts) != 3 or parts[1] != data.get("turn") or data.get("answered"):
+        return
+    if data["current"] >= len(data["questions"]):
+        return
     current_question = data["questions"][data["current"]]
+    if parts[2] not in {str(i) for i in range(len(current_question["options"]))}:
+        return
+    index = int(parts[2])
+    data["answered"] = True
     correct = current_question["correct"]
 
     if index in correct:
         data["score"] += 1
         await query.edit_message_text(
             text="✅ Верно!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data="next_question")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data=f"next|{data['turn']}")]])
         )
     else:
         correct_texts = [current_question["options"][i] for i in correct]
         correct_str = " / ".join(correct_texts)
         await query.edit_message_text(
             text=f"❌ Неверно. Правильный ответ: {correct_str}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data="next_question")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Продолжить", callback_data=f"next|{data['turn']}")]])
         )
 
 def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("profile", profile))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^привет"), greet_user))
     app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^answer\|"))
     app.add_handler(CallbackQueryHandler(handle_callback))
