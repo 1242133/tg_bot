@@ -120,6 +120,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data_key == "next_question":
+        # Двинем индекс вопроса ВПЕРЁД
+        st = user_data.get(user_id)
+        if st is not None:
+            st["current"] = st.get("current", 0) + 1
         await send_question(query, context)
         return
 
@@ -176,7 +180,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_question(query, context):
     data = user_data[query.from_user.id]
-    current_index = data["current"]
+    current_index = max(0, min(data.get("current", 0), len(data.get("questions", []))))
     questions = data["questions"]
 
     if current_index < len(questions):

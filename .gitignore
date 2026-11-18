@@ -226,3 +226,8 @@ env/
 
 # Local env
 .env
+
+.env
+.venv-mac/
+users.json
+.DS_Store
